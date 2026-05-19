@@ -1,6 +1,6 @@
 ---
 name: moderation-reviewer
-model: composer-2
+model: composer-2.5-fast
 description: Reviews AI moderation changes for privacy, fail-closed behavior, provider payloads, cache keys, branch semantics, and tests.
 ---
 
