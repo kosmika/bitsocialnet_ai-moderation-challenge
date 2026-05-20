@@ -1,0 +1,30 @@
+{
+  "title": "Bitsocial AI Moderation Challenge",
+  "summary": "Bitsocial AI Moderation Challenge evaluates Bitsocial comment content against community rules through an OpenAI-compatible model endpoint.",
+  "repoUrl": "https://github.com/bitsocialnet/ai-moderation-challenge",
+  "llmsUrl": "https://github.com/bitsocialnet/ai-moderation-challenge/blob/master/llms.txt",
+  "llmsFullUrl": "https://github.com/bitsocialnet/ai-moderation-challenge/blob/master/llms-full.txt",
+  "shortOutputs": ["llms.txt"],
+  "fullOutputs": ["llms-full.txt"],
+  "links": [
+    ["Repository", "https://github.com/bitsocialnet/ai-moderation-challenge"],
+    ["npm package", "https://www.npmjs.com/package/@bitsocial/ai-moderation-challenge"],
+    ["Bitsocial protocol", "https://bitsocial.net"]
+  ],
+  "notes": [
+    "This package runs on a community node and does not require a hosted moderation server.",
+    "Private production prompts and API keys must stay outside the public repository.",
+    "Moderation behavior is fail-closed where AGENTS.md and tests say so; verify against source before changing policy."
+  ],
+  "docs": [
+    "README.md",
+    "AGENTS.md",
+    "src/AGENTS.md",
+    "tests/AGENTS.md",
+    "docs/agent-playbooks/known-surprises.md",
+    "docs/agent-playbooks/long-running-agent-workflow.md",
+    "docs/agent-playbooks/bug-investigation.md",
+    "docs/agent-playbooks/skills-and-tools.md"
+  ],
+  "optionalDocs": ["CHANGELOG.md"]
+}

@@ -30,6 +30,21 @@ Only record items that are repo-specific, likely to recur, and have a concrete m
 - Clean up only artifacts created by the current change, such as newly unused imports or dead helper code.
 - For non-trivial work, define success criteria and verify them with the narrowest reliable checks before marking the task complete.
 
+## LLM Knowledge Base Policy
+
+Use compiled context for orientation, not as source of truth.
+
+Source of truth:
+
+- Code, tests, package manifests, docs, and runtime/live evidence when relevant.
+
+Compiled context:
+
+- `AGENTS.md`, directory-specific `AGENTS.md` files, `CLAUDE.md`, and repo-managed `.codex/`, `.cursor/`, and `.claude/` workflow files.
+- `docs/agent-playbooks/**`, `docs/agent-runs/**`, `docs/agent-playbooks/known-surprises.md`, and tracked `llms.txt` / `llms-full.txt` files when present.
+
+Agents may use compiled context to navigate quickly, but must verify against source files before making behavioral claims or edits. External code graph, RAG, MCP, or wiki tools are optional local accelerators unless the developer explicitly asks to make one part of the committed workflow.
+
 ## Task Router (Read First)
 
 | Situation                                                                                                       | Required action                                                                                                                                                                                   |
@@ -39,6 +54,7 @@ Only record items that are repo-specific, likely to recur, and have a concrete m
 | `package.json` changed                                                                                          | Run `corepack yarn install` to keep `yarn.lock` in sync                                                                                                                                           |
 | API request/response parsing, prompt handling, cache keying, or secret handling changed                         | Add or update Vitest coverage and use the moderation review checklist in `.codex/agents/moderation-reviewer.toml` or the equivalent Cursor/Claude agent                                           |
 | `README.md`, package version, or release workflow changed                                                       | Verify docs against the code and use the `release` or `release-description` skill when preparing a release                                                                                        |
+| Public docs or AI context changed (`README.md`, `AGENTS.md`, `src/AGENTS.md`, `tests/AGENTS.md`, docs pages, or `scripts/generate-llms-files.mjs`) | Run `corepack yarn llms:generate`; inspect and commit any resulting changes to `llms*.txt` so LLM indexes stay current                                           |
 | Bug report in a specific file/line                                                                              | Start with a git history scan from `docs/agent-playbooks/bug-investigation.md` before editing                                                                                                     |
 | Long-running task spans multiple sessions, handoffs, or spawned agents                                          | Use `docs/agent-playbooks/long-running-agent-workflow.md`, keep a machine-readable feature list plus a progress log, and run `./scripts/agent-init.sh --smoke` before starting a fresh task slice |
 | New reviewable feature/fix started while on `master`                                                            | Create a short-lived `codex/feature/*`, `codex/fix/*`, `codex/docs/*`, or `codex/chore/*` branch from `master` before editing unless the user explicitly asks to work on `master`                 |

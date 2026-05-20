@@ -41,6 +41,7 @@
     "scripts": {
         "build": "yarn clean && node esbuild.config.js && tsc -p tsconfig.json --emitDeclarationOnly",
         "clean": "rm -rf dist",
+        "llms:generate": "node scripts/generate-llms-files.mjs",
         "test": "vitest run",
         "test:coverage": "vitest run --coverage.enabled",
         "coverage:badge": "node scripts/write-coverage-badge.mjs",
