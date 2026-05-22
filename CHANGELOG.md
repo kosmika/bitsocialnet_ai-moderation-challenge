@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.3...v0.1.4) (2026-05-22)
+
+### Bug Fixes
+
+* **challenge:** add recent duplicate thread context ([5b7f5d0](https://github.com/bitsocialnet/ai-moderation-challenge/commit/5b7f5d00ae19c8fd658463f1905209f599de90b3))
+* **tooling:** pin vulnerable transitive dependencies ([69c7c9b](https://github.com/bitsocialnet/ai-moderation-challenge/commit/69c7c9b1bda14cc06bbf0c6cc76568d1cd4a9617))
+
 ## [0.1.3](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.2...v0.1.3) (2026-05-07)
 
 ### Bug Fixes
