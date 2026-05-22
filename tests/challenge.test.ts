@@ -137,6 +137,18 @@ const community = {
     features: { safeForWork: true }
 } as unknown as LocalCommunity;
 
+const createCommunityWithDuplicateRows = (rows: unknown[]) =>
+    ({
+        ...community,
+        _dbHandler: {
+            _db: {
+                prepare: vi.fn(() => ({
+                    all: vi.fn(() => rows)
+                }))
+            }
+        }
+    }) as unknown as LocalCommunity;
+
 const settings = (options: Record<string, unknown> = {}) =>
     ({
         options: {
@@ -215,7 +227,9 @@ describe("Bitsocial AI moderation challenge package", () => {
         });
 
         const input = body.input as Array<{ role: string; content: string }>;
-        expect(input[0]).toEqual({ role: "system", content: "custom prompt" });
+        expect(input[0].role).toBe("system");
+        expect(input[0].content).toContain("custom prompt");
+        expect(input[0].content).toContain("Global duplicate-thread policy");
         const userPayload = JSON.parse(input[1].content) as Record<string, unknown>;
         expect(userPayload).toEqual({
             instructions: expect.stringContaining("untrusted user content"),
@@ -295,6 +309,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(input[0].content).toContain("Treat the submitted publication");
         expect(input[0].content).toContain("Reason should be one concise sentence");
         expect(input[0].content).toContain("Final checklist before review");
+        expect(input[0].content).toContain("Global duplicate-thread policy");
 
         const userPayload = JSON.parse(input[1].content) as {
             instructions: string;
@@ -423,10 +438,106 @@ describe("Bitsocial AI moderation challenge package", () => {
             expect(result).toEqual({ success: true });
             const body = getRequestBody(fetchMock);
             const input = body.input as Array<{ role: string; content: string }>;
-            expect(input[0]).toEqual({ role: "system", content: "file prompt" });
+            expect(input[0].role).toBe("system");
+            expect(input[0].content).toContain("file prompt");
+            expect(input[0].content).toContain("Global duplicate-thread policy");
         } finally {
             await rm(tempDir, { recursive: true, force: true });
         }
+    });
+
+    it("sends activity-relative recent top-level posts for duplicate-thread checks", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "Recent duplicate: PISS PLANET FOUND.",
+                matchedRuleIndexes: []
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const targetTimestamp = 1_779_431_203;
+        const duplicateRows = [
+            { title: "Alsomitra macrocarpa flying seed", timestamp: 1_779_425_429, totalTopLevelPosts: 22 },
+            { title: "New Species of Chimaera discovered in Coral Sea Marine Park", timestamp: 1_779_334_285, totalTopLevelPosts: 22 },
+            { title: "NASA building a Moon Base", timestamp: 1_779_326_702, totalTopLevelPosts: 22 },
+            { title: "When an Earth quake Hits Underwater", timestamp: 1_779_254_320, totalTopLevelPosts: 22 },
+            { title: "Citheronia moth", timestamp: 1_779_194_919, totalTopLevelPosts: 22 },
+            { title: "Simulation of metamorphosis of a frog", timestamp: 1_779_194_425, totalTopLevelPosts: 22 },
+            { title: "x ray on obese person", timestamp: 1_779_075_727, totalTopLevelPosts: 22 },
+            { title: "toucan skull", timestamp: 1_778_676_368, totalTopLevelPosts: 22 },
+            { title: "ufo files", timestamp: 1_778_314_513, totalTopLevelPosts: 22 },
+            {
+                title: "PISS PLANET FOUND",
+                content:
+                    "https://www.dexerto.com/entertainment/pee-planet-scientists-discover-distant-planet-with-atmosphere-that-actually-smells-like-urine-3361785/",
+                link: "https://www.dexerto.com/cdn-image/wp-content/uploads/2026/05/06/scientists-discover-planet-that-smells-like-pee.jpg",
+                linkHtmlTagName: "img",
+                timestamp: 1_778_145_650,
+                totalTopLevelPosts: 22
+            },
+            { title: "I HECKING LOVE SCIENCE!!!", timestamp: 1_778_058_341, totalTopLevelPosts: 22 },
+            { title: "dont go to australia", timestamp: 1_778_040_695, totalTopLevelPosts: 22 },
+            { title: "simplified evolution", timestamp: 1_777_893_412, totalTopLevelPosts: 22 },
+            { title: "Science was a mistake", timestamp: 1_774_745_460, totalTopLevelPosts: 22 }
+        ];
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: settings({
+                apiUrl: "https://provider.example/recent-duplicate-posts",
+                prompt: "private prompt",
+                branch: "allow"
+            }),
+            challengeRequestMessage: createCommentRequest(
+                "The oceans on Indias New Home Planet named Indianus are MADE OUT OF PURE URINE",
+                {
+                    comment: {
+                        title: "Indias New Home Planet",
+                        timestamp: targetTimestamp,
+                        link: "https://metro.co.uk/wp-content/uploads/2026/04/coverimages55636009-0840.jpg",
+                        linkHtmlTagName: "img"
+                    }
+                }
+            ),
+            challengeIndex: 1,
+            community: createCommunityWithDuplicateRows(duplicateRows)
+        });
+
+        expect(result).toEqual({ success: false, error: "Recent duplicate: PISS PLANET FOUND." });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        const body = getRequestBody(fetchMock);
+        const input = body.input as Array<{ role: string; content: string }>;
+        expect(input[0].content).toContain("Global duplicate-thread policy");
+
+        const userPayload = JSON.parse(input[1].content) as {
+            community: {
+                duplicateCheck: {
+                    totalTopLevelPosts: number;
+                    recentWindowPostCount: number;
+                    recentWindowSeconds: number;
+                    recentTopLevelPosts: Array<{ title?: string; ageSeconds: number; link?: { domain?: string; path?: string } }>;
+                };
+            };
+        };
+        expect(userPayload.community.duplicateCheck.totalTopLevelPosts).toBe(22);
+        expect(userPayload.community.duplicateCheck.recentWindowPostCount).toBe(19);
+        expect(userPayload.community.duplicateCheck.recentWindowSeconds).toBeGreaterThan(14 * 24 * 60 * 60);
+
+        const recentPostTitles = userPayload.community.duplicateCheck.recentTopLevelPosts.map((post) => post.title);
+        expect(recentPostTitles).toContain("PISS PLANET FOUND");
+        expect(recentPostTitles).not.toContain("Science was a mistake");
+        expect(userPayload.community.duplicateCheck.recentTopLevelPosts).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    title: "PISS PLANET FOUND",
+                    link: expect.objectContaining({
+                        domain: "www.dexerto.com",
+                        path: "/cdn-image/wp-content/uploads/2026/05/06/scientists-discover-planet-that-smells-like-pee.jpg"
+                    })
+                })
+            ])
+        );
+        expect(JSON.stringify(userPayload.community.duplicateCheck)).not.toContain("author");
     });
 
     it("persists successful verdicts in a JSON cache keyed by prompt hash", async () => {
@@ -897,6 +1008,8 @@ describe("Bitsocial AI moderation challenge package", () => {
         );
         const body = getRequestBody(fetchMock);
         const input = body.input as Array<{ role: string; content: string }>;
-        expect(input[0]).toEqual({ role: "system", content: "inline" });
+        expect(input[0].role).toBe("system");
+        expect(input[0].content).toContain("inline");
+        expect(input[0].content).toContain("Global duplicate-thread policy");
     });
 });

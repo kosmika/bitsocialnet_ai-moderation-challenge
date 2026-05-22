@@ -85,11 +85,11 @@ OpenAI-compatible APIs are a practical compatibility convention, not a formal op
 - Content edits with verdict `review` are rejected until PKC supports pending approval for edits.
 - Content edits are rejected if the model API is unavailable.
 - Delete-only edits and non-comment publication types bypass AI moderation.
-- The challenge sends text, title, link URL/domain/path, flags, flairs, community address/title/description, and `community.rules`.
+- The challenge sends text, title, link URL/domain/path, flags, flairs, community address/title/description, `community.rules`, and a bounded activity-relative list of recent top-level posts for duplicate-thread checks when the local community database is available.
 - The model payload explicitly labels publication fields as untrusted user content, not instructions.
 - The challenge does not fetch linked media in v1.
 - Two branch invocations for the same publication reuse one in-process verdict promise.
-- Successful verdicts are cached in a private JSON file keyed by a SHA-256 hash over model/provider config, community context, target content, and the final prompt hash. The cache does not store the raw prompt or API key.
+- Successful verdicts are cached in a private JSON file keyed by a SHA-256 hash over model/provider config, community context including duplicate-check context, target content, and the final prompt hash. The cache does not store the raw prompt or API key.
 - Verdicts are written to a private JSONL audit log with the model reason, raw publication fields, and hashes/metadata for correlation. The audit log does not store the raw prompt or API key.
 
 ## Moderation Audit Community

@@ -26,6 +26,15 @@ const LEGACY_RUNTIME_COMMUNITY_KEY = String.fromCharCode(115, 117, 98, 112, 108,
 const MAX_CACHE_ENTRIES = 1000;
 const MAX_JSON_CACHE_ENTRIES = 10_000;
 const FAILED_CACHE_TTL_MS = 30_000;
+const MAX_DUPLICATE_CANDIDATE_POSTS = 64;
+const MIN_DUPLICATE_CONTEXT_POSTS = 8;
+const MAX_DUPLICATE_CONTEXT_POSTS = 32;
+const MAX_DUPLICATE_CONTEXT_TITLE_CHARS = 200;
+const MAX_DUPLICATE_CONTEXT_CONTENT_CHARS = 800;
+const MAX_DUPLICATE_CONTEXT_URL_CHARS = 500;
+const MAX_DUPLICATE_CONTEXT_PATH_CHARS = 300;
+const MIN_DUPLICATE_RECENCY_SECONDS = 6 * 60 * 60;
+const MAX_DUPLICATE_RECENCY_SECONDS = 30 * 24 * 60 * 60;
 
 const DEFAULT_SYSTEM_PROMPT = [
     "You are the automated first-pass moderation filter for a Bitsocial community.",
@@ -59,6 +68,13 @@ const DEFAULT_SYSTEM_PROMPT = [
     "Reason should be one concise sentence. For review, name the exact rule or threshold. For allow, say no clear rule, spam, or abuse threshold was met. Do not moralize about politics, vulgarity, or offensiveness.",
     "Final checklist before review: clear community rule violation? obvious spam, scam, malware, referral, or adult-service promotion? credible threat, direct targeted harassment, or repeated abusive flooding? If none, return allow.",
     "Return only JSON matching the requested schema."
+].join("\n");
+
+const GLOBAL_DUPLICATE_POLICY_PROMPT = [
+    "Global duplicate-thread policy:",
+    "When recent top-level community posts are provided, review a submitted top-level post if it covers the same concrete story, event, linked item, or distinctive subject as one of those recent posts, even when the title, wording, or source domain differs.",
+    "Treat broad theme similarity as allow. The duplicate must be about the same specific item or story.",
+    'For duplicate reviews, use matchedRuleIndexes [] and make the reason a concise sentence that starts with "Recent duplicate:" and names the prior thread title when available.'
 ].join("\n");
 
 const PROMPT_PRECEDENCE_WARNING = "`prompt` takes priority, so ai-moderation-challenge is using `prompt` and ignoring `promptPath`.";
@@ -172,6 +188,7 @@ type RuntimeCommunity = {
     description?: string;
     rules?: unknown;
     features?: unknown;
+    _dbHandler?: unknown;
 };
 
 type CommunityContext = {
@@ -179,6 +196,7 @@ type CommunityContext = {
     title?: string;
     description?: string;
     rules: string[];
+    duplicateCheck?: DuplicateCheckContext;
 };
 
 type ModeratedKind = "comment" | "content-edit";
@@ -219,6 +237,38 @@ type ModerationTarget = {
     target: PublicationTarget;
 };
 
+type SqliteStatement = {
+    all: (...params: unknown[]) => unknown[];
+};
+
+type SqliteDatabase = {
+    prepare: (sql: string) => SqliteStatement;
+};
+
+type DuplicatePostRow = {
+    title?: string;
+    content?: string;
+    link?: string;
+    linkHtmlTagName?: string;
+    timestamp: number;
+    totalTopLevelPosts?: number;
+};
+
+type DuplicatePostContext = {
+    title?: string;
+    content?: string;
+    link?: LinkTarget;
+    timestamp: number;
+    ageSeconds: number;
+};
+
+type DuplicateCheckContext = {
+    totalTopLevelPosts: number;
+    recentWindowPostCount: number;
+    recentWindowSeconds: number;
+    recentTopLevelPosts: DuplicatePostContext[];
+};
+
 type JsonCacheEntry = {
     cachedAt: number;
     verdict: ModelVerdict;
@@ -236,7 +286,7 @@ const auditLogWrites = new Map<string, Promise<void>>();
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
 const isRuntimeCommunity = (value: unknown): value is RuntimeCommunity =>
-    isRecord(value) && ("address" in value || "rules" in value || "title" in value || "description" in value);
+    isRecord(value) && ("address" in value || "rules" in value || "title" in value || "description" in value || "_dbHandler" in value);
 
 const getRuntimeCommunity = (args: GetChallengeArgs): RuntimeCommunity | undefined => {
     if (isRuntimeCommunity(args.community)) {
@@ -519,7 +569,10 @@ const setCachedVerdictInJson = async ({
     }
 };
 
-const getCommunityContext = (community: RuntimeCommunity | undefined): CommunityContext => {
+const getCommunityContext = (
+    community: RuntimeCommunity | undefined,
+    duplicateCheck: DuplicateCheckContext | undefined
+): CommunityContext => {
     const context: CommunityContext = {
         rules: Array.isArray(community?.rules) ? community.rules.filter((rule): rule is string => typeof rule === "string") : []
     };
@@ -527,6 +580,7 @@ const getCommunityContext = (community: RuntimeCommunity | undefined): Community
     if (typeof community?.address === "string") context.address = community.address;
     if (typeof community?.title === "string") context.title = community.title;
     if (typeof community?.description === "string") context.description = community.description;
+    if (duplicateCheck) context.duplicateCheck = duplicateCheck;
 
     return context;
 };
@@ -578,6 +632,139 @@ const linkTarget = ({ link, htmlTagName }: { link: unknown; htmlTagName?: unknow
             url: link,
             ...(typeof htmlTagName === "string" ? { htmlTagName } : {})
         };
+    }
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const truncate = (value: string, maxLength: number) => (value.length > maxLength ? `${value.slice(0, maxLength)}...` : value);
+
+const median = (values: number[]) => {
+    if (!values.length) return undefined;
+    const sorted = [...values].sort((a, b) => a - b);
+    const midpoint = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[midpoint - 1] + sorted[midpoint]) / 2 : sorted[midpoint];
+};
+
+const isSqliteDatabase = (value: unknown): value is SqliteDatabase => isRecord(value) && typeof value.prepare === "function";
+
+const getCommunityDatabase = (community: RuntimeCommunity | undefined) => {
+    if (!isRecord(community?._dbHandler)) return undefined;
+    const db = community._dbHandler._db;
+    return isSqliteDatabase(db) ? db : undefined;
+};
+
+const isDuplicatePostRow = (row: unknown): row is DuplicatePostRow => isRecord(row) && typeof row.timestamp === "number";
+
+const queryDuplicatePostRows = (db: SqliteDatabase, targetTimestamp: number): DuplicatePostRow[] => {
+    const rows = db
+        .prepare(
+            `
+            SELECT
+                c.title,
+                c.content,
+                c.link,
+                c.linkHtmlTagName,
+                c.timestamp,
+                COUNT(*) OVER() AS totalTopLevelPosts
+            FROM comments c
+            LEFT JOIN commentUpdates cu ON cu.cid = c.cid
+            WHERE c.depth = 0
+              AND c.timestamp <= ?
+              AND c.pendingApproval IS NOT 1
+              AND COALESCE(cu.approved, 1) != 0
+              AND (cu.removed IS NULL OR cu.removed IS NOT 1)
+              AND (
+                  cu.edit IS NULL
+                  OR json_extract(cu.edit, '$.deleted') IS NULL
+                  OR json_extract(cu.edit, '$.deleted') != 1
+              )
+            ORDER BY c.timestamp DESC, c.rowid DESC
+            LIMIT ${MAX_DUPLICATE_CANDIDATE_POSTS}
+            `
+        )
+        .all(targetTimestamp);
+
+    return rows.filter(isDuplicatePostRow).map((row) => ({
+        title: stringValue(row.title),
+        content: stringValue(row.content),
+        link: stringValue(row.link),
+        linkHtmlTagName: stringValue(row.linkHtmlTagName),
+        timestamp: row.timestamp,
+        totalTopLevelPosts: numberValue(row.totalTopLevelPosts)
+    }));
+};
+
+const getDuplicateContextPostCount = (totalTopLevelPosts: number) =>
+    Math.round(clamp(Math.ceil(Math.sqrt(Math.max(totalTopLevelPosts, 1)) * 4), MIN_DUPLICATE_CONTEXT_POSTS, MAX_DUPLICATE_CONTEXT_POSTS));
+
+const getDuplicateRecencyWindowSeconds = (rows: DuplicatePostRow[], recentWindowPostCount: number) => {
+    const timestamps = rows
+        .map((row) => row.timestamp)
+        .filter((timestamp) => Number.isFinite(timestamp))
+        .sort((a, b) => b - a);
+    const gaps = timestamps
+        .slice(0, recentWindowPostCount)
+        .map((timestamp, index) => (index === timestamps.length - 1 ? undefined : timestamp - timestamps[index + 1]))
+        .filter((gap): gap is number => typeof gap === "number" && gap > 0);
+    const medianGapSeconds = median(gaps) ?? 24 * 60 * 60;
+    return Math.round(clamp(medianGapSeconds * recentWindowPostCount, MIN_DUPLICATE_RECENCY_SECONDS, MAX_DUPLICATE_RECENCY_SECONDS));
+};
+
+const toDuplicatePostContext = (row: DuplicatePostRow, targetTimestamp: number): DuplicatePostContext => {
+    const post: DuplicatePostContext = {
+        timestamp: row.timestamp,
+        ageSeconds: Math.max(0, Math.round(targetTimestamp - row.timestamp))
+    };
+
+    if (row.title) post.title = truncate(row.title, MAX_DUPLICATE_CONTEXT_TITLE_CHARS);
+    if (row.content) post.content = truncate(row.content, MAX_DUPLICATE_CONTEXT_CONTENT_CHARS);
+    const link = linkTarget({ link: row.link, htmlTagName: row.linkHtmlTagName });
+    if (link) {
+        post.link = {
+            ...link,
+            url: truncate(link.url, MAX_DUPLICATE_CONTEXT_URL_CHARS),
+            ...(link.path ? { path: truncate(link.path, MAX_DUPLICATE_CONTEXT_PATH_CHARS) } : {})
+        };
+    }
+
+    return post;
+};
+
+const getDuplicateCheckContext = (
+    community: RuntimeCommunity | undefined,
+    target: PublicationTarget
+): DuplicateCheckContext | undefined => {
+    if (target.kind !== "post") return undefined;
+
+    const db = getCommunityDatabase(community);
+    if (!db) return undefined;
+
+    const targetTimestamp = target.timestamp ?? Math.floor(Date.now() / 1000);
+    try {
+        const rows = queryDuplicatePostRows(db, targetTimestamp);
+        if (!rows.length) return undefined;
+
+        const totalTopLevelPosts = rows[0]?.totalTopLevelPosts ?? rows.length;
+        const recentWindowPostCount = getDuplicateContextPostCount(totalTopLevelPosts);
+        const recentWindowSeconds = getDuplicateRecencyWindowSeconds(rows, recentWindowPostCount);
+        const recentTopLevelPosts = rows
+            .slice(0, recentWindowPostCount)
+            .filter((row) => targetTimestamp - row.timestamp <= recentWindowSeconds)
+            .map((row) => toDuplicatePostContext(row, targetTimestamp));
+
+        if (!recentTopLevelPosts.length) return undefined;
+
+        return {
+            totalTopLevelPosts,
+            recentWindowPostCount,
+            recentWindowSeconds,
+            recentTopLevelPosts
+        };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown duplicate-check error";
+        log.error("AI moderation duplicate-check context read failed: %s", message);
+        return undefined;
     }
 };
 
@@ -685,16 +872,18 @@ const emitWarningOnce = (code: string, message: string) => {
     process.emitWarning(message, { code });
 };
 
+const withGlobalPolicyPrompt = (systemPrompt: string) => `${systemPrompt.trimEnd()}\n\n${GLOBAL_DUPLICATE_POLICY_PROMPT}`;
+
 const loadSystemPrompt = async (options: ParsedOptions) => {
     if (options.prompt) {
         if (options.promptPath) {
             emitWarningOnce("BITSOCIAL_AI_MODERATION_PROMPT_PRECEDENCE", PROMPT_PRECEDENCE_WARNING);
         }
-        return options.prompt;
+        return withGlobalPolicyPrompt(options.prompt);
     }
-    if (options.promptPath) return readFile(options.promptPath, "utf8");
+    if (options.promptPath) return withGlobalPolicyPrompt(await readFile(options.promptPath, "utf8"));
     emitWarningOnce("BITSOCIAL_AI_MODERATION_PUBLIC_PROMPT", PUBLIC_FALLBACK_PROMPT_WARNING);
-    return DEFAULT_SYSTEM_PROMPT;
+    return withGlobalPolicyPrompt(DEFAULT_SYSTEM_PROMPT);
 };
 
 const createUserPromptPayload = (communityContext: CommunityContext, target: ModelPublicationTarget) => ({
@@ -1002,7 +1191,9 @@ const getChallenge = async (args: GetChallengeArgs): Promise<ChallengeResultInpu
         return getBypassResult(options);
     }
 
-    const communityContext = getCommunityContext(getRuntimeCommunity(args));
+    const runtimeCommunity = getRuntimeCommunity(args);
+    const duplicateCheck = getDuplicateCheckContext(runtimeCommunity, moderationTarget.target);
+    const communityContext = getCommunityContext(runtimeCommunity, duplicateCheck);
 
     try {
         const response = await evaluate({
