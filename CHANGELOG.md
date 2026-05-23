@@ -4,7 +4,7 @@
 
 ### Features
 
-* **challenge:** support remote private prompts ([#7](https://github.com/bitsocialnet/ai-moderation-challenge/issues/7)) ([50dd4b8](https://github.com/bitsocialnet/ai-moderation-challenge/commit/50dd4b8e52f62cfdee957976a5246b02a9a3a63f))
+- **challenge:** support remote private prompts ([#7](https://github.com/bitsocialnet/ai-moderation-challenge/issues/7)) ([50dd4b8](https://github.com/bitsocialnet/ai-moderation-challenge/commit/50dd4b8e52f62cfdee957976a5246b02a9a3a63f))
 
 ## [0.1.4](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.3...v0.1.4) (2026-05-22)
 
