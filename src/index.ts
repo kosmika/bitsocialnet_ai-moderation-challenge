@@ -35,6 +35,10 @@ const MAX_DUPLICATE_CONTEXT_URL_CHARS = 500;
 const MAX_DUPLICATE_CONTEXT_PATH_CHARS = 300;
 const MIN_DUPLICATE_RECENCY_SECONDS = 6 * 60 * 60;
 const MAX_DUPLICATE_RECENCY_SECONDS = 30 * 24 * 60 * 60;
+const PROMPT_URL_CACHE_TTL_MS = 5 * 60 * 1000;
+const PROMPT_URL_FETCH_TIMEOUT_MS = 5_000;
+const MAX_PROMPT_URL_BYTES = 64 * 1024;
+const MAX_REMOTE_PROMPT_CACHE_ENTRIES = 256;
 
 const DEFAULT_SYSTEM_PROMPT = [
     "You are the automated first-pass moderation filter for a Bitsocial community.",
@@ -77,10 +81,15 @@ const GLOBAL_DUPLICATE_POLICY_PROMPT = [
     'For duplicate reviews, use matchedRuleIndexes [] and make the reason a concise sentence that starts with "Recent duplicate:" and names the prior thread title when available.'
 ].join("\n");
 
-const PROMPT_PRECEDENCE_WARNING = "`prompt` takes priority, so ai-moderation-challenge is using `prompt` and ignoring `promptPath`.";
+const PROMPT_PRECEDENCE_WARNING =
+    "`prompt` takes priority, so ai-moderation-challenge is using `prompt` and ignoring `promptPath`/`promptUrl`.";
+const PROMPT_PATH_PRECEDENCE_WARNING =
+    "`promptPath` takes priority, so ai-moderation-challenge is using `promptPath` and ignoring `promptUrl`.";
 const PUBLIC_FALLBACK_PROMPT_WARNING =
-    "Using the public built-in AI moderation prompt. This prompt can be gamed by users; configure a private prompt or promptPath immediately.";
+    "Using the public built-in AI moderation prompt. This prompt can be gamed by users; configure a private prompt, promptPath, or promptUrl immediately.";
 const emittedWarningCodes = new Set<string>();
+const remotePromptCache = new Map<string, { prompt: string; fetchedAt: number }>();
+const remotePromptFetches = new Map<string, Promise<string>>();
 
 const MODEL_RESPONSE_SCHEMA = {
     type: "object",
@@ -153,6 +162,20 @@ const optionInputs = [
         default: "",
         description: "Path to a private system prompt file on the community node",
         placeholder: "/root/bitsocial-ai-moderation-prompt.md"
+    },
+    {
+        option: "promptUrl",
+        label: "Prompt URL",
+        default: "",
+        description: "HTTPS URL for a private remote system prompt",
+        placeholder: "https://prompt.example.com/v1/prompts/ai-moderation.md"
+    },
+    {
+        option: "promptBearerToken",
+        label: "Prompt bearer token",
+        default: "",
+        description: "Private bearer token sent only when fetching promptUrl",
+        placeholder: ""
     },
     {
         option: "cachePath",
@@ -874,14 +897,169 @@ const emitWarningOnce = (code: string, message: string) => {
 
 const withGlobalPolicyPrompt = (systemPrompt: string) => `${systemPrompt.trimEnd()}\n\n${GLOBAL_DUPLICATE_POLICY_PROMPT}`;
 
+const getRemotePromptCacheKey = (options: ParsedOptions) =>
+    sha256(
+        stableStringify({
+            promptUrl: options.promptUrl,
+            promptBearerTokenHash: optionalHash(options.promptBearerToken)
+        })
+    );
+
+const setRemotePromptCache = (cacheKey: string, prompt: string) => {
+    if (!remotePromptCache.has(cacheKey) && remotePromptCache.size >= MAX_REMOTE_PROMPT_CACHE_ENTRIES) {
+        const firstKey = remotePromptCache.keys().next().value;
+        if (typeof firstKey === "string") {
+            remotePromptCache.delete(firstKey);
+        }
+    }
+    remotePromptCache.set(cacheKey, { prompt, fetchedAt: Date.now() });
+};
+
+const readResponseTextWithLimit = async (response: Response, maxBytes: number) => {
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > maxBytes) {
+        throw new Error(`Remote AI moderation prompt exceeds ${maxBytes} bytes`);
+    }
+
+    if (!response.body) {
+        const text = await response.text();
+        if (new TextEncoder().encode(text).byteLength > maxBytes) {
+            throw new Error(`Remote AI moderation prompt exceeds ${maxBytes} bytes`);
+        }
+        return text;
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+            await reader.cancel().catch(() => undefined);
+            throw new Error(`Remote AI moderation prompt exceeds ${maxBytes} bytes`);
+        }
+        chunks.push(value);
+    }
+
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+
+    return new TextDecoder("utf-8").decode(bytes);
+};
+
+const validatePromptContentType = (response: Response) => {
+    const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (!contentType) return;
+    const acceptedTypes = new Set(["text/plain", "text/markdown", "text/x-markdown", "application/octet-stream"]);
+    if (!acceptedTypes.has(contentType)) {
+        throw new Error("Remote AI moderation prompt must be served as plain text or Markdown");
+    }
+};
+
+const fetchRemotePrompt = async (options: ParsedOptions) => {
+    if (!options.promptUrl) {
+        throw new Error("Remote AI moderation prompt URL is not configured");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PROMPT_URL_FETCH_TIMEOUT_MS);
+    timeout.unref?.();
+
+    try {
+        const headers: Record<string, string> = {
+            accept: "text/plain, text/markdown;q=0.9, */*;q=0.1"
+        };
+        if (options.promptBearerToken) {
+            headers.authorization = `Bearer ${options.promptBearerToken}`;
+        }
+
+        const response = await fetch(options.promptUrl, {
+            method: "GET",
+            headers,
+            redirect: "manual",
+            signal: controller.signal
+        });
+
+        if (!response.ok) {
+            throw new Error(`Remote AI moderation prompt fetch failed (${response.status})`);
+        }
+        validatePromptContentType(response);
+
+        const prompt = await readResponseTextWithLimit(response, MAX_PROMPT_URL_BYTES);
+        if (!prompt.trim()) {
+            throw new Error("Remote AI moderation prompt is empty");
+        }
+        return prompt;
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") {
+            throw new Error("Remote AI moderation prompt fetch timed out");
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeout);
+    }
+};
+
+const loadRemotePrompt = async (options: ParsedOptions) => {
+    const cacheKey = getRemotePromptCacheKey(options);
+    const cached = remotePromptCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt < PROMPT_URL_CACHE_TTL_MS) {
+        return cached.prompt;
+    }
+
+    const existingFetch = remotePromptFetches.get(cacheKey);
+    if (existingFetch) {
+        return existingFetch;
+    }
+
+    const promptFetch = fetchRemotePrompt(options)
+        .then((prompt) => {
+            setRemotePromptCache(cacheKey, prompt);
+            return prompt;
+        })
+        .catch((error: unknown) => {
+            if (cached) {
+                const message = error instanceof Error ? error.message : "Unknown remote prompt fetch error";
+                log.error("AI moderation remote prompt fetch failed; using cached prompt: %s", message);
+                setRemotePromptCache(cacheKey, cached.prompt);
+                return cached.prompt;
+            }
+            throw error;
+        })
+        .finally(() => {
+            if (remotePromptFetches.get(cacheKey) === promptFetch) {
+                remotePromptFetches.delete(cacheKey);
+            }
+        });
+
+    remotePromptFetches.set(cacheKey, promptFetch);
+    return promptFetch;
+};
+
 const loadSystemPrompt = async (options: ParsedOptions) => {
     if (options.prompt) {
-        if (options.promptPath) {
+        if (options.promptPath || options.promptUrl) {
             emitWarningOnce("BITSOCIAL_AI_MODERATION_PROMPT_PRECEDENCE", PROMPT_PRECEDENCE_WARNING);
         }
         return withGlobalPolicyPrompt(options.prompt);
     }
-    if (options.promptPath) return withGlobalPolicyPrompt(await readFile(options.promptPath, "utf8"));
+    if (options.promptPath) {
+        if (options.promptUrl) {
+            emitWarningOnce("BITSOCIAL_AI_MODERATION_PROMPT_PATH_PRECEDENCE", PROMPT_PATH_PRECEDENCE_WARNING);
+        }
+        return withGlobalPolicyPrompt(await readFile(options.promptPath, "utf8"));
+    }
+    if (options.promptUrl) return withGlobalPolicyPrompt(await loadRemotePrompt(options));
     emitWarningOnce("BITSOCIAL_AI_MODERATION_PUBLIC_PROMPT", PUBLIC_FALLBACK_PROMPT_WARNING);
     return withGlobalPolicyPrompt(DEFAULT_SYSTEM_PROMPT);
 };

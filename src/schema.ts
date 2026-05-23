@@ -29,6 +29,8 @@ export type ParsedOptions = {
     branch: Branch;
     prompt?: string;
     promptPath?: string;
+    promptUrl?: string;
+    promptBearerToken?: string;
     cachePath?: string;
     auditLogPath?: string;
     error: string;
@@ -47,6 +49,14 @@ const isHttpUrl = (value: string) => {
     try {
         const parsed = new URL(value);
         return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+        return false;
+    }
+};
+
+const isHttpsUrl = (value: string) => {
+    try {
+        return new URL(value).protocol === "https:";
     } catch {
         return false;
     }
@@ -112,6 +122,19 @@ export const createOptionsSchema = (optionInputs: ReadonlyArray<OptionInput>) =>
             }, BranchSchema),
             prompt: z.preprocess((value) => resolveOptionalOptionString(value, "prompt"), z.string().optional()),
             promptPath: z.preprocess((value) => resolveOptionalOptionString(value, "promptPath"), z.string().optional()),
+            promptUrl: z.preprocess(
+                (value) => {
+                    const resolved = resolveOptionalOptionString(value, "promptUrl");
+                    return typeof resolved === "string" ? normalizeUrl(resolved) : resolved;
+                },
+                z
+                    .url()
+                    .refine(isHttpsUrl, {
+                        message: "Prompt URL must use https"
+                    })
+                    .optional()
+            ),
+            promptBearerToken: z.preprocess((value) => resolveOptionalOptionString(value, "promptBearerToken"), z.string().optional()),
             cachePath: z.preprocess(
                 (value) => resolveOptionalOptionString(value, "cachePath", { emptyStringDisablesDefault: true }),
                 z.string().optional()
