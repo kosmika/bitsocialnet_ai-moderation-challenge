@@ -107,7 +107,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@bitsocial/ai-moderation-challenge@workspace:."
   dependencies:
-    "@pkcprotocol/pkc-js": "npm:0.0.36"
+    "@pkcprotocol/pkc-js": "npm:0.0.37"
     "@pkcprotocol/pkc-logger": "npm:0.1.0"
     "@release-it/conventional-changelog": "npm:10.0.1"
     "@vitest/coverage-v8": "npm:4.0.16"
@@ -2401,9 +2401,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@pkcprotocol/pkc-js@npm:0.0.36":
-  version: 0.0.36
-  resolution: "@pkcprotocol/pkc-js@npm:0.0.36"
+"@pkcprotocol/pkc-js@npm:0.0.37":
+  version: 0.0.37
+  resolution: "@pkcprotocol/pkc-js@npm:0.0.37"
   dependencies:
     "@enhances/with-resolvers": "npm:0.0.5"
     "@helia/block-brokers": "npm:5.2.4"
@@ -2452,7 +2452,7 @@ __metadata:
     typestub-ipfs-only-hash: "npm:4.0.0"
     uuid: "npm:13.0.0"
     zod: "npm:4.3.6"
-  checksum: 10c0/bb346988e5961530c21bb282e1bf6ebc0a914211fa803c67dac51b63b958f558aa89e746b5014e1b1a66c1efc8241124c734922d0f22ad46cc1c611e69b2afcb
+  checksum: 10c0/4a76a0a64685414ce3eee004189b96beb6ddfeee654eb191c104c8a38654b0b15de591966f39de67f5961ba07fe2cf0bedc744c280382b93e52ece2887618c58
   languageName: node
   linkType: hard
 

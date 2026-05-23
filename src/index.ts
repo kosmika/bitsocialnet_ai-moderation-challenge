@@ -864,18 +864,27 @@ const getFallbackResult = (kind: ModeratedKind, options: ParsedOptions, error: u
     return { success: false, error: kind === "content-edit" ? options.error : message };
 };
 
+const getSuccessResult = ({ pendingApproval, reason }: { pendingApproval: boolean; reason: string | undefined }): ChallengeResultInput => {
+    if (!pendingApproval || !reason) return { success: true };
+    return { success: true, commentUpdate: { reason } };
+};
+
 const getBranchResult = (
     kind: ModeratedKind,
     options: ParsedOptions,
     verdict: "allow" | "review",
-    reason: string | undefined
+    reason: string | undefined,
+    pendingApproval: boolean
 ): ChallengeResultInput => {
     if (kind === "content-edit" && verdict === "review") {
         return { success: false, error: reason || options.error };
     }
 
     if (options.branch === verdict) {
-        return { success: true };
+        return getSuccessResult({
+            pendingApproval: kind === "comment" && options.branch === "review" && pendingApproval,
+            reason
+        });
     }
 
     return { success: false, error: reason || "AI moderation branch did not match." };
@@ -1379,7 +1388,13 @@ const getChallenge = async (args: GetChallengeArgs): Promise<ChallengeResultInpu
             communityContext,
             options
         });
-        return getBranchResult(moderationTarget.kind, options, response.verdict, response.reason);
+        return getBranchResult(
+            moderationTarget.kind,
+            options,
+            response.verdict,
+            response.reason,
+            args.challengeSettings.pendingApproval === true
+        );
     } catch (error) {
         return getFallbackResult(moderationTarget.kind, options, error);
     }

@@ -12,7 +12,7 @@ bitsocial challenge install @bitsocial/ai-moderation-challenge
 
 ## Configuration
 
-Install this challenge twice: one `allow` branch and one `review` branch. The `review` branch uses PKC `pendingApproval` to route rule-breaking comments to the moderator queue.
+Install this challenge twice: one `allow` branch and one `review` branch. The `review` branch uses PKC `pendingApproval` to route rule-breaking comments to the moderator queue, and returns the AI model reason in `commentUpdate.reason` when the installed PKC runtime supports pending-approval metadata.
 
 ```js
 [
@@ -86,7 +86,7 @@ OpenAI-compatible APIs are a practical compatibility convention, not a formal op
 ## Behavior
 
 - New comments with verdict `allow` publish normally.
-- New comments with verdict `review` are sent to pending approval.
+- New comments with verdict `review` are sent to pending approval with the redacted model reason attached for the author.
 - New comments are also sent to pending approval if the model API is unavailable.
 - Content edits with verdict `review` are rejected until PKC supports pending approval for edits.
 - Content edits are rejected if the model API is unavailable.

@@ -166,6 +166,12 @@ const settings = (options: Record<string, unknown> = {}) =>
         }
     }) as CommunityChallengeSetting;
 
+const pendingApprovalSettings = (options: Record<string, unknown> = {}) =>
+    ({
+        ...settings(options),
+        pendingApproval: true
+    }) as CommunityChallengeSetting;
+
 const getFetchCall = (fetchMock: MockFetch, index = 0) => fetchMock.mock.calls[index] as [string, RequestInit];
 
 const getRequestBody = (fetchMock: MockFetch, index = 0) =>
@@ -358,14 +364,14 @@ describe("Bitsocial AI moderation challenge package", () => {
             community: spamCommunity
         });
         const reviewResult = await challengeFile.getChallenge({
-            challengeSettings: settings({ apiUrl: "https://provider.example/spam-review", branch: "review" }),
+            challengeSettings: pendingApprovalSettings({ apiUrl: "https://provider.example/spam-review", branch: "review" }),
             challengeRequestMessage: request,
             challengeIndex: 2,
             community: spamCommunity
         });
 
         expect(allowResult).toEqual({ success: false, error: "No spam" });
-        expect(reviewResult).toEqual({ success: true });
+        expect(reviewResult).toEqual({ success: true, commentUpdate: { reason: "No spam" } });
         expect(fetchMock).toHaveBeenCalledTimes(1);
 
         const body = getRequestBody(fetchMock);
@@ -378,6 +384,28 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(userPayload.instructions).toContain("untrusted user content");
         expect(userPayload.community.rules).toEqual(["No spam", "No sexualized minors"]);
         expect(userPayload.publication.content).toBe("Buy cheap pills at spam.example now.");
+    });
+
+    it("redacts publication text before adding the review reason to pending approval metadata", async () => {
+        const content = "pending approval text should not be echoed";
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: `Quoted ${content} in the reason`,
+                matchedRuleIndexes: [0]
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: pendingApprovalSettings({ apiUrl: "https://provider.example/redacted-pending-review", branch: "review" }),
+            challengeRequestMessage: createCommentRequest(content),
+            challengeIndex: 1,
+            community
+        });
+
+        expect(result).toEqual({ success: true, commentUpdate: { reason: "Quoted [content] in the reason" } });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("supports OpenAI-compatible chat-completions endpoints", async () => {
