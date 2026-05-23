@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.5...v0.1.6) (2026-05-23)
+
+### Features
+
+* **challenge:** attach pending approval reason ([776957e](https://github.com/bitsocialnet/ai-moderation-challenge/commit/776957ecb172d9914014a712d6349a5d2b3bcf9f))
+
 ## [0.1.5](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.4...v0.1.5) (2026-05-23)
 
 ### Features
