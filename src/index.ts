@@ -69,16 +69,19 @@ const DEFAULT_SYSTEM_PROMPT = [
     "Do not enforce general platform-safety preferences beyond the supplied community rules and the obvious spam/abuse categories above.",
     "You are given link URL metadata only. Do not infer hidden media contents and do not request or fetch URLs.",
     "Use matchedRuleIndexes as zero-based indexes into the supplied community rules. Use an empty array when no rule matched.",
-    "Reason should be one concise sentence. For review, name the exact rule or threshold. For allow, say no clear rule, spam, or abuse threshold was met. Do not moralize about politics, vulgarity, or offensiveness.",
+    'Reason should be one concise clause that can follow "because". For review, say what appears to cross the exact rule or threshold, using may/appears language. For allow, say no clear rule, spam, or abuse threshold was met. Do not include AI attribution, Markdown links, raw URLs, or moralizing about politics, vulgarity, or offensiveness.',
     "Final checklist before review: clear community rule violation? obvious spam, scam, malware, referral, or adult-service promotion? credible threat, direct targeted harassment, or repeated abusive flooding? If none, return allow.",
     "Return only JSON matching the requested schema."
 ].join("\n");
 
 const GLOBAL_DUPLICATE_POLICY_PROMPT = [
     "Global duplicate-thread policy:",
-    "When recent top-level community posts are provided, review a submitted top-level post if it covers the same concrete story, event, linked item, or distinctive subject as one of those recent posts, even when the title, wording, or source domain differs.",
+    "This policy only applies when the user payload includes community.duplicateCheck.recentTopLevelPosts.",
+    "Review a submitted top-level post as a duplicate only if the submitted publication and a provided recent post share the same concrete story, event, linked item, named subject, or distinctive claim.",
+    "Do not infer duplicates from broad topic, board theme, tone, imageboard style, or unrelated recent titles.",
+    "If the post clearly violates a supplied community rule and duplicate status is uncertain, use the community rule with matchedRuleIndexes instead of a duplicate reason.",
     "Treat broad theme similarity as allow. The duplicate must be about the same specific item or story.",
-    'For duplicate reviews, use matchedRuleIndexes [] and make the reason a concise sentence that starts with "Recent duplicate:" and names the prior thread title when available.'
+    'For duplicate reviews, use matchedRuleIndexes [] and make the reason a concise clause that can follow "because", for example "it appears to duplicate the recent thread <title>" when a prior thread title is available.'
 ].join("\n");
 
 const PROMPT_PRECEDENCE_WARNING =
@@ -281,6 +284,8 @@ type DuplicatePostContext = {
     title?: string;
     content?: string;
     link?: LinkTarget;
+    linkUrlHash?: string;
+    linkPathHash?: string;
     timestamp: number;
     ageSeconds: number;
 };
@@ -457,6 +462,46 @@ const sanitizeVerdict = (verdict: ModelVerdict, target: PublicationTarget): Mode
     ...verdict,
     reason: redactReason(verdict.reason, target)
 });
+
+const AI_MODERATION_APP_URL = "https://bitsocial.net/apps/ai-moderation-challenge";
+const aiModerationLink = `[AI moderation](${AI_MODERATION_APP_URL})`;
+
+const getPendingApprovalTargetLabel = (targetKind: PublicationTarget["kind"]) => {
+    if (targetKind === "reply") return "reply";
+    if (targetKind === "post") return "post";
+    return "publication";
+};
+
+const lowerFirstReasonChar = (reason: string) => (reason ? reason[0].toLowerCase() + reason.slice(1) : reason);
+
+const getCommunityRulesPath = (communityContext: CommunityContext) => {
+    const titleMatch = communityContext.title?.match(/^\/([^/\s]+)\//);
+    if (!titleMatch?.[1]) return undefined;
+    return `/rules/${encodeURIComponent(titleMatch[1])}`;
+};
+
+const formatRuleLinks = (matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"], communityContext: CommunityContext) => {
+    const rulesPath = getCommunityRulesPath(communityContext);
+    if (!rulesPath || !Array.isArray(matchedRuleIndexes)) return "";
+
+    const ruleNumbers = [
+        ...new Set(matchedRuleIndexes.filter((index) => Number.isInteger(index) && index >= 0).map((index) => index + 1))
+    ].sort((a, b) => a - b);
+    if (ruleNumbers.length === 0) return "";
+
+    return ` (${ruleNumbers.map((ruleNumber) => `[rule #${ruleNumber}](${rulesPath})`).join(", ")})`;
+};
+
+const formatPendingApprovalReason = (
+    reason: ModelVerdict["reason"],
+    targetKind: PublicationTarget["kind"],
+    matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"],
+    communityContext: CommunityContext
+) => {
+    const trimmedReason = typeof reason === "string" ? reason.trim() : "";
+    if (!trimmedReason || trimmedReason.startsWith(aiModerationLink)) return trimmedReason;
+    return `${aiModerationLink} sent this ${getPendingApprovalTargetLabel(targetKind)} to the mod queue because ${lowerFirstReasonChar(trimmedReason)}${formatRuleLinks(matchedRuleIndexes, communityContext)}`;
+};
 
 const getModelPublicationTarget = (target: PublicationTarget): ModelPublicationTarget => ({
     kind: target.kind,
@@ -749,6 +794,8 @@ const toDuplicatePostContext = (row: DuplicatePostRow, targetTimestamp: number):
             url: truncate(link.url, MAX_DUPLICATE_CONTEXT_URL_CHARS),
             ...(link.path ? { path: truncate(link.path, MAX_DUPLICATE_CONTEXT_PATH_CHARS) } : {})
         };
+        post.linkUrlHash = optionalHash(link.url);
+        post.linkPathHash = optionalHash(link.path);
     }
 
     return post;
@@ -864,9 +911,26 @@ const getFallbackResult = (kind: ModeratedKind, options: ParsedOptions, error: u
     return { success: false, error: kind === "content-edit" ? options.error : message };
 };
 
-const getSuccessResult = ({ pendingApproval, reason }: { pendingApproval: boolean; reason: string | undefined }): ChallengeResultInput => {
+const getSuccessResult = ({
+    pendingApproval,
+    reason,
+    targetKind,
+    matchedRuleIndexes,
+    communityContext
+}: {
+    pendingApproval: boolean;
+    reason: string | undefined;
+    targetKind: PublicationTarget["kind"];
+    matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"];
+    communityContext: CommunityContext;
+}): ChallengeResultInput => {
     if (!pendingApproval || !reason) return { success: true };
-    return { success: true, commentUpdate: { reason } };
+    return {
+        success: true,
+        commentUpdate: {
+            reason: formatPendingApprovalReason(reason, targetKind, matchedRuleIndexes, communityContext)
+        }
+    };
 };
 
 const getBranchResult = (
@@ -874,7 +938,10 @@ const getBranchResult = (
     options: ParsedOptions,
     verdict: "allow" | "review",
     reason: string | undefined,
-    pendingApproval: boolean
+    pendingApproval: boolean,
+    targetKind: PublicationTarget["kind"],
+    matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"],
+    communityContext: CommunityContext
 ): ChallengeResultInput => {
     if (kind === "content-edit" && verdict === "review") {
         return { success: false, error: reason || options.error };
@@ -883,7 +950,10 @@ const getBranchResult = (
     if (options.branch === verdict) {
         return getSuccessResult({
             pendingApproval: kind === "comment" && options.branch === "review" && pendingApproval,
-            reason
+            reason,
+            targetKind,
+            matchedRuleIndexes,
+            communityContext
         });
     }
 
@@ -905,6 +975,9 @@ const emitWarningOnce = (code: string, message: string) => {
 };
 
 const withGlobalPolicyPrompt = (systemPrompt: string) => `${systemPrompt.trimEnd()}\n\n${GLOBAL_DUPLICATE_POLICY_PROMPT}`;
+
+const getSystemPrompt = (systemPrompt: string, communityContext: CommunityContext) =>
+    communityContext.duplicateCheck ? withGlobalPolicyPrompt(systemPrompt) : systemPrompt.trimEnd();
 
 const getRemotePromptCacheKey = (options: ParsedOptions) =>
     sha256(
@@ -1060,17 +1133,17 @@ const loadSystemPrompt = async (options: ParsedOptions) => {
         if (options.promptPath || options.promptUrl) {
             emitWarningOnce("BITSOCIAL_AI_MODERATION_PROMPT_PRECEDENCE", PROMPT_PRECEDENCE_WARNING);
         }
-        return withGlobalPolicyPrompt(options.prompt);
+        return options.prompt;
     }
     if (options.promptPath) {
         if (options.promptUrl) {
             emitWarningOnce("BITSOCIAL_AI_MODERATION_PROMPT_PATH_PRECEDENCE", PROMPT_PATH_PRECEDENCE_WARNING);
         }
-        return withGlobalPolicyPrompt(await readFile(options.promptPath, "utf8"));
+        return readFile(options.promptPath, "utf8");
     }
-    if (options.promptUrl) return withGlobalPolicyPrompt(await loadRemotePrompt(options));
+    if (options.promptUrl) return loadRemotePrompt(options);
     emitWarningOnce("BITSOCIAL_AI_MODERATION_PUBLIC_PROMPT", PUBLIC_FALLBACK_PROMPT_WARNING);
-    return withGlobalPolicyPrompt(DEFAULT_SYSTEM_PROMPT);
+    return DEFAULT_SYSTEM_PROMPT;
 };
 
 const createUserPromptPayload = (communityContext: CommunityContext, target: ModelPublicationTarget) => ({
@@ -1256,6 +1329,141 @@ const parseModelResponse = (data: unknown) => {
     }
 };
 
+const DUPLICATE_REASON_PATTERN = /\b(duplicate|repost|already\s+posted|recent\s+thread)\b/i;
+const MIN_DUPLICATE_SHARED_TOKENS = 2;
+const duplicateEvidenceStopWords = new Set([
+    "about",
+    "again",
+    "also",
+    "already",
+    "appears",
+    "because",
+    "been",
+    "being",
+    "from",
+    "have",
+    "into",
+    "only",
+    "post",
+    "posted",
+    "recent",
+    "same",
+    "that",
+    "the",
+    "their",
+    "there",
+    "this",
+    "thread",
+    "with",
+    "would"
+]);
+
+const getEvidenceTokens = (...values: Array<string | undefined>) =>
+    new Set(
+        values
+            .flatMap((value) => value?.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [])
+            .filter((token) => !duplicateEvidenceStopWords.has(token))
+    );
+
+const hasSameLink = (target: PublicationTarget, recentPost: DuplicatePostContext) => {
+    if (!target.link?.url || !recentPost.link?.url) return false;
+    if (target.link.url === recentPost.link.url) return true;
+    if (recentPost.linkUrlHash && optionalHash(target.link.url) === recentPost.linkUrlHash) return true;
+    if (target.link.path && recentPost.linkPathHash && optionalHash(target.link.path) === recentPost.linkPathHash) return true;
+    return Boolean(
+        target.link.domain && target.link.path && target.link.domain === recentPost.link.domain && target.link.path === recentPost.link.path
+    );
+};
+
+const reasonClaimsRecentPost = (reasonTokens: Set<string>, recentPost: DuplicatePostContext) => {
+    const titleTokens = getEvidenceTokens(recentPost.title);
+    if (titleTokens.size === 0) return false;
+    return [...titleTokens].every((token) => reasonTokens.has(token));
+};
+
+const hasDuplicateEvidence = (target: PublicationTarget, recentPost: DuplicatePostContext) => {
+    if (hasSameLink(target, recentPost)) return true;
+
+    const targetTokens = getEvidenceTokens(target.title, target.content, target.link?.domain, target.link?.path);
+    const recentPostTokens = getEvidenceTokens(recentPost.title, recentPost.content, recentPost.link?.domain, recentPost.link?.path);
+    let sharedTokens = 0;
+    for (const token of targetTokens) {
+        if (recentPostTokens.has(token)) sharedTokens += 1;
+    }
+    return sharedTokens >= MIN_DUPLICATE_SHARED_TOKENS;
+};
+
+const isDuplicateReview = (verdict: ModelVerdict) => {
+    if (verdict.verdict !== "review") return false;
+    if (verdict.matchedRuleIndexes?.length) return false;
+    return DUPLICATE_REASON_PATTERN.test(verdict.reason ?? "");
+};
+
+const getDuplicateEvidencePosts = (target: PublicationTarget, communityContext: CommunityContext) => {
+    const recentPosts = communityContext.duplicateCheck?.recentTopLevelPosts;
+    if (!recentPosts?.length) return [];
+    return recentPosts.filter((recentPost) => hasDuplicateEvidence(target, recentPost));
+};
+
+const getClaimedDuplicatePosts = (verdict: ModelVerdict, communityContext: CommunityContext) => {
+    const recentPosts = communityContext.duplicateCheck?.recentTopLevelPosts;
+    if (!recentPosts?.length) return [];
+    const reasonTokens = getEvidenceTokens(verdict.reason);
+    return recentPosts.filter((recentPost) => reasonClaimsRecentPost(reasonTokens, recentPost));
+};
+
+const normalizeDuplicateReview = (verdict: ModelVerdict, target: PublicationTarget, communityContext: CommunityContext) => {
+    if (!isDuplicateReview(verdict)) return verdict;
+
+    const evidencePosts = getDuplicateEvidencePosts(target, communityContext);
+    if (evidencePosts.length === 0) return verdict;
+
+    const claimedPosts = getClaimedDuplicatePosts(verdict, communityContext);
+    if (!claimedPosts.length || claimedPosts.some((recentPost) => evidencePosts.includes(recentPost))) return verdict;
+
+    const supportedTitle = evidencePosts[0]?.title?.trim();
+    return {
+        ...verdict,
+        reason: supportedTitle ? `it appears to duplicate the recent thread ${supportedTitle}` : "it appears to duplicate a recent thread"
+    };
+};
+
+const isUnsupportedDuplicateReview = (verdict: ModelVerdict, target: PublicationTarget, communityContext: CommunityContext) => {
+    if (!isDuplicateReview(verdict)) return false;
+    return getDuplicateEvidencePosts(target, communityContext).length === 0;
+};
+
+const withoutDuplicateCheck = (communityContext: CommunityContext): CommunityContext => {
+    const { duplicateCheck: _duplicateCheck, ...ruleOnlyCommunityContext } = communityContext;
+    return ruleOnlyCommunityContext;
+};
+
+const requestProviderVerdict = async ({
+    options,
+    apiKey,
+    systemPrompt,
+    communityContext,
+    target
+}: {
+    options: ParsedOptions;
+    apiKey: string;
+    systemPrompt: string;
+    communityContext: CommunityContext;
+    target: ModelPublicationTarget;
+}) =>
+    parseModelResponse(
+        await postJson({
+            options,
+            apiKey,
+            body: createModelRequestBody({
+                options,
+                systemPrompt,
+                communityContext,
+                target
+            })
+        })
+    );
+
 const evaluate = async ({
     target,
     communityContext,
@@ -1265,7 +1473,8 @@ const evaluate = async ({
     communityContext: CommunityContext;
     options: ParsedOptions;
 }) => {
-    const systemPrompt = await loadSystemPrompt(options);
+    const baseSystemPrompt = await loadSystemPrompt(options);
+    const systemPrompt = getSystemPrompt(baseSystemPrompt, communityContext);
     const apiKey = getApiKey(options);
     const promptHash = sha256(systemPrompt);
     const modelTarget = getModelPublicationTarget(target);
@@ -1303,21 +1512,31 @@ const evaluate = async ({
         return cachedVerdict;
     }
 
-    const requestBody = createModelRequestBody({
+    const promise = requestProviderVerdict({
         options,
+        apiKey,
         systemPrompt,
         communityContext,
         target: modelTarget
-    });
-
-    const promise = postJson({
-        options,
-        apiKey,
-        body: requestBody
     })
-        .then(parseModelResponse)
         .then(async (rawVerdict) => {
-            const verdict = sanitizeVerdict(rawVerdict, target);
+            let finalRawVerdict = rawVerdict;
+            if (isUnsupportedDuplicateReview(rawVerdict, target, communityContext)) {
+                const ruleOnlyCommunityContext = withoutDuplicateCheck(communityContext);
+                finalRawVerdict = await requestProviderVerdict({
+                    options,
+                    apiKey,
+                    systemPrompt: getSystemPrompt(baseSystemPrompt, ruleOnlyCommunityContext),
+                    communityContext: ruleOnlyCommunityContext,
+                    target: modelTarget
+                });
+                if (isUnsupportedDuplicateReview(finalRawVerdict, target, ruleOnlyCommunityContext)) {
+                    throw new Error("AI moderation duplicate review lacked recent-post evidence");
+                }
+            } else {
+                finalRawVerdict = normalizeDuplicateReview(rawVerdict, target, communityContext);
+            }
+            const verdict = sanitizeVerdict(finalRawVerdict, target);
             await setCachedVerdictInJson({
                 cachePath: options.cachePath,
                 cacheKey,
@@ -1332,7 +1551,7 @@ const evaluate = async ({
                     promptHash,
                     communityContext,
                     target,
-                    verdict: rawVerdict
+                    verdict: finalRawVerdict
                 })
             });
             return verdict;
@@ -1393,7 +1612,10 @@ const getChallenge = async (args: GetChallengeArgs): Promise<ChallengeResultInpu
             options,
             response.verdict,
             response.reason,
-            args.challengeSettings.pendingApproval === true
+            args.challengeSettings.pendingApproval === true,
+            moderationTarget.target.kind,
+            response.matchedRuleIndexes,
+            communityContext
         );
     } catch (error) {
         return getFallbackResult(moderationTarget.kind, options, error);

@@ -243,7 +243,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const input = body.input as Array<{ role: string; content: string }>;
         expect(input[0].role).toBe("system");
         expect(input[0].content).toContain("custom prompt");
-        expect(input[0].content).toContain("Global duplicate-thread policy");
+        expect(input[0].content).not.toContain("Global duplicate-thread policy");
         const userPayload = JSON.parse(input[1].content) as Record<string, unknown>;
         expect(userPayload).toEqual({
             instructions: expect.stringContaining("untrusted user content"),
@@ -321,9 +321,9 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(input[0].content).toContain("Return review only when the content");
         expect(input[0].content).toContain("Return allow when");
         expect(input[0].content).toContain("Treat the submitted publication");
-        expect(input[0].content).toContain("Reason should be one concise sentence");
+        expect(input[0].content).toContain('Reason should be one concise clause that can follow "because"');
         expect(input[0].content).toContain("Final checklist before review");
-        expect(input[0].content).toContain("Global duplicate-thread policy");
+        expect(input[0].content).not.toContain("Global duplicate-thread policy");
 
         const userPayload = JSON.parse(input[1].content) as {
             instructions: string;
@@ -354,6 +354,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const request = createCommentRequest("Buy cheap pills at spam.example now.");
         const spamCommunity = {
             ...community,
+            title: "/spam/ - Spam tests",
             rules: ["No spam", "No sexualized minors"]
         } as unknown as LocalCommunity;
 
@@ -371,7 +372,12 @@ describe("Bitsocial AI moderation challenge package", () => {
         });
 
         expect(allowResult).toEqual({ success: false, error: "No spam" });
-        expect(reviewResult).toEqual({ success: true, commentUpdate: { reason: "No spam" } });
+        expect(reviewResult).toEqual({
+            success: true,
+            commentUpdate: {
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because no spam ([rule #1](/rules/spam))"
+            }
+        });
         expect(fetchMock).toHaveBeenCalledTimes(1);
 
         const body = getRequestBody(fetchMock);
@@ -404,7 +410,12 @@ describe("Bitsocial AI moderation challenge package", () => {
             community
         });
 
-        expect(result).toEqual({ success: true, commentUpdate: { reason: "Quoted [content] in the reason" } });
+        expect(result).toEqual({
+            success: true,
+            commentUpdate: {
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because quoted [content] in the reason"
+            }
+        });
         expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -476,7 +487,7 @@ describe("Bitsocial AI moderation challenge package", () => {
             const input = body.input as Array<{ role: string; content: string }>;
             expect(input[0].role).toBe("system");
             expect(input[0].content).toContain("file prompt");
-            expect(input[0].content).toContain("Global duplicate-thread policy");
+            expect(input[0].content).not.toContain("Global duplicate-thread policy");
         } finally {
             await rm(tempDir, { recursive: true, force: true });
         }
@@ -517,7 +528,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const body = getRequestBody(fetchMock, 1);
         const input = body.input as Array<{ role: string; content: string }>;
         expect(input[0].content).toContain("# Remote moderation prompt");
-        expect(input[0].content).toContain("Global duplicate-thread policy");
+        expect(input[0].content).not.toContain("Global duplicate-thread policy");
         expect(JSON.stringify(body)).not.toContain("prompt-secret-token");
     });
 
@@ -717,7 +728,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const fetchMock = stubFetch(
             createModelResponse({
                 verdict: "review",
-                reason: "Recent duplicate: PISS PLANET FOUND.",
+                reason: "it appears to duplicate the recent thread PISS PLANET FOUND",
                 matchedRuleIndexes: []
             })
         );
@@ -769,7 +780,7 @@ describe("Bitsocial AI moderation challenge package", () => {
             community: createCommunityWithDuplicateRows(duplicateRows)
         });
 
-        expect(result).toEqual({ success: false, error: "Recent duplicate: PISS PLANET FOUND." });
+        expect(result).toEqual({ success: false, error: "it appears to duplicate the recent thread PISS PLANET FOUND" });
         expect(fetchMock).toHaveBeenCalledTimes(1);
 
         const body = getRequestBody(fetchMock);
@@ -805,6 +816,172 @@ describe("Bitsocial AI moderation challenge package", () => {
             ])
         );
         expect(JSON.stringify(userPayload.community.duplicateCheck)).not.toContain("author");
+    });
+
+    it("retries without duplicate context when a duplicate review is not supported by recent posts", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "it appears to duplicate the recent thread There is nothing wrong with wearing socks and sandals",
+                matchedRuleIndexes: []
+            }),
+            createModelResponse({
+                verdict: "review",
+                reason: "content does not pertain to fashion or apparel",
+                matchedRuleIndexes: [0]
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const targetTimestamp = 1_780_000_000;
+        const fashionCommunity = {
+            ...createCommunityWithDuplicateRows([
+                {
+                    title: "There is nothing wrong with wearing socks and sandals",
+                    timestamp: targetTimestamp - 60,
+                    totalTopLevelPosts: 8
+                }
+            ]),
+            address: "fashion-posting.bso",
+            title: "/fa/ - Fashion",
+            rules: ["Images and discussion should pertain to fashion and apparel"]
+        } as unknown as LocalCommunity;
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: pendingApprovalSettings({
+                apiUrl: "https://provider.example/unsupported-duplicate-review",
+                prompt: "private prompt",
+                branch: "review"
+            }),
+            challengeRequestMessage: createCommentRequest(
+                "It's official. MicroStrategy, $MSTR, is now facing its biggest unrealized loss on Bitcoin.",
+                {
+                    comment: {
+                        title: "MicroStrategy faces a Bitcoin loss",
+                        timestamp: targetTimestamp,
+                        link: "https://pbs.twimg.com/media/example.jpg",
+                        linkHtmlTagName: "img"
+                    }
+                }
+            ),
+            challengeIndex: 1,
+            community: fashionCommunity
+        });
+
+        expect(result).toEqual({
+            success: true,
+            commentUpdate: {
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because content does not pertain to fashion or apparel ([rule #1](/rules/fa))"
+            }
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+
+        const firstBody = getRequestBody(fetchMock, 0);
+        const firstInput = firstBody.input as Array<{ role: string; content: string }>;
+        expect(firstInput[0].content).toContain("Global duplicate-thread policy");
+        expect(JSON.parse(firstInput[1].content)).toHaveProperty("community.duplicateCheck");
+
+        const retryBody = getRequestBody(fetchMock, 1);
+        const retryInput = retryBody.input as Array<{ role: string; content: string }>;
+        expect(retryInput[0].content).not.toContain("Global duplicate-thread policy");
+        expect(JSON.parse(retryInput[1].content)).not.toHaveProperty("community.duplicateCheck");
+    });
+
+    it("keeps duplicate reviews when a mis-cited thread hides supported duplicate evidence", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "it appears to duplicate the recent thread There is nothing wrong with wearing socks and sandals",
+                matchedRuleIndexes: []
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const targetTimestamp = 1_780_000_000;
+        const duplicateLink = `https://x.io/${"a".repeat(600)}`;
+        const duplicateRows = [
+            {
+                title: "There is nothing wrong with wearing socks and sandals",
+                timestamp: targetTimestamp - 60,
+                totalTopLevelPosts: 8
+            },
+            {
+                title: "Repeated runway image",
+                link: duplicateLink,
+                linkHtmlTagName: "img",
+                timestamp: targetTimestamp - 120,
+                totalTopLevelPosts: 8
+            }
+        ];
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: settings({
+                apiUrl: "https://provider.example/miscited-duplicate-review",
+                prompt: "private prompt",
+                branch: "allow"
+            }),
+            challengeRequestMessage: createCommentRequest("new title for same linked item", {
+                comment: {
+                    title: "Same runway image again",
+                    timestamp: targetTimestamp,
+                    link: duplicateLink,
+                    linkHtmlTagName: "img"
+                }
+            }),
+            challengeIndex: 1,
+            community: createCommunityWithDuplicateRows(duplicateRows)
+        });
+
+        expect(result).toEqual({
+            success: false,
+            error: "it appears to duplicate the recent thread Repeated runway image"
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails closed when a duplicate-context retry still returns an unsupported duplicate review", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "it appears to duplicate the recent thread There is nothing wrong with wearing socks and sandals",
+                matchedRuleIndexes: []
+            }),
+            createModelResponse({
+                verdict: "review",
+                reason: "it appears to duplicate a recent thread",
+                matchedRuleIndexes: []
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const targetTimestamp = 1_780_000_000;
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: settings({
+                apiUrl: "https://provider.example/retry-unsupported-duplicate-review",
+                prompt: "private prompt",
+                branch: "allow"
+            }),
+            challengeRequestMessage: createCommentRequest("MicroStrategy Bitcoin loss", {
+                comment: {
+                    title: "MicroStrategy faces a Bitcoin loss",
+                    timestamp: targetTimestamp,
+                    link: "https://pbs.twimg.com/media/example.jpg",
+                    linkHtmlTagName: "img"
+                }
+            }),
+            challengeIndex: 1,
+            community: createCommunityWithDuplicateRows([
+                {
+                    title: "There is nothing wrong with wearing socks and sandals",
+                    timestamp: targetTimestamp - 60,
+                    totalTopLevelPosts: 8
+                }
+            ])
+        });
+
+        expect(result).toEqual({
+            success: false,
+            error: "AI moderation duplicate review lacked recent-post evidence"
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("persists successful verdicts in a JSON cache keyed by prompt hash", async () => {
@@ -1297,7 +1474,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const input = body.input as Array<{ role: string; content: string }>;
         expect(input[0].role).toBe("system");
         expect(input[0].content).toContain("inline");
-        expect(input[0].content).toContain("Global duplicate-thread policy");
+        expect(input[0].content).not.toContain("Global duplicate-thread policy");
     });
 
     it("uses promptPath before promptUrl and warns about URL precedence", async () => {
