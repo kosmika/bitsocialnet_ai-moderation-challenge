@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.6...v0.1.7) (2026-06-04)
+
+### Bug Fixes
+
+- **challenge:** retry unsupported duplicate reviews ([#8](https://github.com/bitsocialnet/ai-moderation-challenge/issues/8)) ([4f69c42](https://github.com/bitsocialnet/ai-moderation-challenge/commit/4f69c4275a2c60f382613c041a652150bdd311c1))
+
 ## [0.1.6](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.5...v0.1.6) (2026-05-23)
 
 ### Features
