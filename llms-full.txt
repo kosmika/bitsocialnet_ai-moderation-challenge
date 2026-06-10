@@ -650,6 +650,12 @@ Source: https://github.com/bitsocialnet/ai-moderation-challenge/blob/master/CHAN
 ```markdown
 # Changelog
 
+## [0.1.8](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.7...v0.1.8) (2026-06-10)
+
+### Bug Fixes
+
+* **challenge:** include article recency date evidence ([7a72d90](https://github.com/bitsocialnet/ai-moderation-challenge/commit/7a72d9033c108e8b8bf741e6d58d3d243d5598a2))
+
 ## [0.1.7](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.6...v0.1.7) (2026-06-04)
 
 ### Bug Fixes
