@@ -246,7 +246,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(input[0].content).not.toContain("Global duplicate-thread policy");
         const userPayload = JSON.parse(input[1].content) as Record<string, unknown>;
         expect(userPayload).toEqual({
-            instructions: expect.stringContaining("untrusted user content"),
+            instructions: expect.stringContaining("article age or recency rules"),
             community: {
                 address: "test.bitsocial.net",
                 title: "Test community",
@@ -266,7 +266,11 @@ describe("Bitsocial AI moderation challenge package", () => {
                 flags: {
                     nsfw: true
                 },
-                flairs: ["meta", "announcement"]
+                flairs: ["meta", "announcement"],
+                submittedAt: {
+                    unixSeconds: 1_777_966_066,
+                    iso: "2026-05-05T07:27:46.000Z"
+                }
             }
         });
         expect(userPayload.community).not.toHaveProperty("features");
@@ -277,6 +281,107 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(userPayload.publication).not.toHaveProperty("signatureHash");
         expect(userPayload.publication).not.toHaveProperty("challengeRequestIdHash");
         expect(fetchMock.mock.calls.map((call) => call[0])).not.toContain("https://cdn.example.com/media/image.png?sig=1");
+    });
+
+    it("sends URL date hints and submission time for article-recency rules", async () => {
+        const fetchMock = stubFetch(createModelResponse({ verdict: "allow", reason: "", matchedRuleIndexes: [] }));
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const articleUrl =
+            "https://nypost.com/2026/06/09/us-news/karmelo-anthony-convicted-of-fatally-stabbing-austin-metcalf-at-texas-track-meet/";
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: settings({ prompt: "private prompt" }),
+            challengeRequestMessage: createCommentRequest("article recency payload", {
+                comment: {
+                    title: "1ST DEGREE MURDER",
+                    link: articleUrl,
+                    linkHtmlTagName: undefined,
+                    timestamp: 1_781_043_119
+                }
+            }),
+            challengeIndex: 1,
+            community: {
+                ...community,
+                title: "/news/ - Current News",
+                rules: [
+                    "All topics and discussion should be about current news articles.",
+                    "News articles should be current; no articles older than 48 hours should be posted."
+                ]
+            } as unknown as LocalCommunity
+        });
+
+        expect(result).toEqual({ success: true });
+        const body = getRequestBody(fetchMock);
+        const input = body.input as Array<{ role: string; content: string }>;
+        const userPayload = JSON.parse(input[1].content) as {
+            instructions: string;
+            publication: Record<string, unknown>;
+        };
+        expect(userPayload.instructions).toContain("compare publication.link.dateHint against publication.submittedAt");
+        expect(userPayload.publication).toMatchObject({
+            kind: "post",
+            title: "1ST DEGREE MURDER",
+            link: {
+                url: articleUrl,
+                domain: "nypost.com",
+                path: "/2026/06/09/us-news/karmelo-anthony-convicted-of-fatally-stabbing-austin-metcalf-at-texas-track-meet/",
+                dateHint: {
+                    source: "urlPath",
+                    date: "2026-06-09",
+                    precision: "day",
+                    earliestPossibleAt: "2026-06-09T00:00:00.000Z",
+                    latestPossibleAt: "2026-06-09T23:59:59.999Z"
+                }
+            },
+            submittedAt: {
+                unixSeconds: 1_781_043_119,
+                iso: "2026-06-09T22:11:59.000Z"
+            }
+        });
+        expect(userPayload.publication).not.toHaveProperty("timestamp");
+        expect(fetchMock.mock.calls.map((call) => call[0])).not.toContain(articleUrl);
+    });
+
+    it("extracts URL date hints from common article path suffixes", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({ verdict: "allow", reason: "", matchedRuleIndexes: [] }),
+            createModelResponse({ verdict: "allow", reason: "", matchedRuleIndexes: [] })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const articleUrls = ["https://example.com/2026-06-09-article-title", "https://example.com/2026/06/09.html"];
+
+        for (const [index, articleUrl] of articleUrls.entries()) {
+            const result = await challengeFile.getChallenge({
+                challengeSettings: settings({
+                    apiUrl: `https://provider.example/article-date-suffix-${index}`,
+                    prompt: "private prompt"
+                }),
+                challengeRequestMessage: createCommentRequest(`article date suffix ${index}`, {
+                    comment: {
+                        link: articleUrl,
+                        timestamp: 1_781_043_119
+                    }
+                }),
+                challengeIndex: 1,
+                community
+            });
+
+            expect(result).toEqual({ success: true });
+        }
+
+        for (const index of articleUrls.keys()) {
+            const body = getRequestBody(fetchMock, index);
+            const input = body.input as Array<{ role: string; content: string }>;
+            const userPayload = JSON.parse(input[1].content) as {
+                publication: { link?: { dateHint?: Record<string, unknown> } };
+            };
+            expect(userPayload.publication.link?.dateHint).toMatchObject({
+                source: "urlPath",
+                date: "2026-06-09",
+                precision: "day",
+                latestPossibleAt: "2026-06-09T23:59:59.999Z"
+            });
+        }
     });
 
     it("uses gpt-5.4-nano as the default model", async () => {
@@ -321,6 +426,8 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(input[0].content).toContain("Return review only when the content");
         expect(input[0].content).toContain("Return allow when");
         expect(input[0].content).toContain("Treat the submitted publication");
+        expect(input[0].content).toContain("publication.link.dateHint");
+        expect(input[0].content).toContain("latestPossibleAt");
         expect(input[0].content).toContain('Reason should be one concise clause that can follow "because"');
         expect(input[0].content).toContain("Final checklist before review");
         expect(input[0].content).not.toContain("Global duplicate-thread policy");
@@ -330,6 +437,7 @@ describe("Bitsocial AI moderation challenge package", () => {
             publication: Record<string, unknown>;
         };
         expect(userPayload.instructions).toContain("untrusted user content");
+        expect(userPayload.instructions).toContain("article age or recency rules");
         expect(userPayload.publication.content).toBe(content);
     });
 
@@ -1049,7 +1157,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const secondRequest = createCommentRequest("same moderation payload", {
             comment: {
                 author: { address: "author-address-2", publicKey: "author-public-key-2" },
-                timestamp: 1_777_966_999,
+                timestamp: 1_777_966_066,
                 signature: { publicKey: "signature-public-key-2", signature: "signature-value-2" }
             },
             request: { challengeRequestId: new Uint8Array([9, 8, 7, 6]) }
@@ -1071,6 +1179,37 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(firstResult).toEqual({ success: true });
         expect(secondResult).toEqual({ success: true });
         expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not reuse cached verdicts when submission time differs", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({ verdict: "allow", reason: "", matchedRuleIndexes: [] }),
+            createModelResponse({ verdict: "review", reason: "second timestamp should run", matchedRuleIndexes: [0] })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const firstRequest = createCommentRequest("same content different timestamp", {
+            comment: { timestamp: 1_777_966_066 }
+        });
+        const secondRequest = createCommentRequest("same content different timestamp", {
+            comment: { timestamp: 1_777_966_999 }
+        });
+
+        const firstResult = await challengeFile.getChallenge({
+            challengeSettings: settings({ apiUrl: "https://provider.example/submission-time-cache" }),
+            challengeRequestMessage: firstRequest,
+            challengeIndex: 1,
+            community
+        });
+        const secondResult = await challengeFile.getChallenge({
+            challengeSettings: settings({ apiUrl: "https://provider.example/submission-time-cache" }),
+            challengeRequestMessage: secondRequest,
+            challengeIndex: 1,
+            community
+        });
+
+        expect(firstResult).toEqual({ success: true });
+        expect(secondResult).toEqual({ success: false, error: "second timestamp should run" });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("writes private audit entries without raw prompts, API keys, or publication content", async () => {
