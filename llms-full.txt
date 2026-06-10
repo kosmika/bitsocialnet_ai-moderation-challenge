@@ -39,7 +39,7 @@ bitsocial challenge install @bitsocial/ai-moderation-challenge
 
 ## Configuration
 
-Install this challenge twice: one `allow` branch and one `review` branch. The `review` branch uses PKC `pendingApproval` to route rule-breaking comments to the moderator queue.
+Install this challenge twice: one `allow` branch and one `review` branch. The `review` branch uses PKC `pendingApproval` to route rule-breaking comments to the moderator queue, and returns the AI model reason in `commentUpdate.reason` when the installed PKC runtime supports pending-approval metadata.
 
 ```js
 [
@@ -113,12 +113,12 @@ OpenAI-compatible APIs are a practical compatibility convention, not a formal op
 ## Behavior
 
 - New comments with verdict `allow` publish normally.
-- New comments with verdict `review` are sent to pending approval.
+- New comments with verdict `review` are sent to pending approval with the redacted model reason attached for the author.
 - New comments are also sent to pending approval if the model API is unavailable.
 - Content edits with verdict `review` are rejected until PKC supports pending approval for edits.
 - Content edits are rejected if the model API is unavailable.
 - Delete-only edits and non-comment publication types bypass AI moderation.
-- The challenge sends text, title, link URL/domain/path, flags, flairs, community address/title/description, `community.rules`, and a bounded activity-relative list of recent top-level posts for duplicate-thread checks when the local community database is available.
+- The challenge sends text, title, submission time, link URL/domain/path, URL-path date hints, flags, flairs, community address/title/description, `community.rules`, and a bounded activity-relative list of recent top-level posts for duplicate-thread checks when the local community database is available.
 - The model payload explicitly labels publication fields as untrusted user content, not instructions.
 - The challenge does not fetch linked publication media or user-submitted URLs. `promptUrl` is an operator-configured private prompt source, not publication content.
 - Remote prompts are fetched without following redirects, with a 5 second timeout, capped at 64 KiB, cached in memory for 5 minutes, and reused from the last in-memory copy if a refresh fails. If the first remote prompt fetch fails, moderation fails closed for the allow branch.
@@ -649,6 +649,30 @@ Source: https://github.com/bitsocialnet/ai-moderation-challenge/blob/master/CHAN
 
 ```markdown
 # Changelog
+
+## [0.1.8](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.7...v0.1.8) (2026-06-10)
+
+### Bug Fixes
+
+* **challenge:** include article recency date evidence ([7a72d90](https://github.com/bitsocialnet/ai-moderation-challenge/commit/7a72d9033c108e8b8bf741e6d58d3d243d5598a2))
+
+## [0.1.7](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.6...v0.1.7) (2026-06-04)
+
+### Bug Fixes
+
+- **challenge:** retry unsupported duplicate reviews ([#8](https://github.com/bitsocialnet/ai-moderation-challenge/issues/8)) ([4f69c42](https://github.com/bitsocialnet/ai-moderation-challenge/commit/4f69c4275a2c60f382613c041a652150bdd311c1))
+
+## [0.1.6](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.5...v0.1.6) (2026-05-23)
+
+### Features
+
+- **challenge:** attach pending approval reason ([776957e](https://github.com/bitsocialnet/ai-moderation-challenge/commit/776957ecb172d9914014a712d6349a5d2b3bcf9f))
+
+## [0.1.5](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.4...v0.1.5) (2026-05-23)
+
+### Features
+
+- **challenge:** support remote private prompts ([#7](https://github.com/bitsocialnet/ai-moderation-challenge/issues/7)) ([50dd4b8](https://github.com/bitsocialnet/ai-moderation-challenge/commit/50dd4b8e52f62cfdee957976a5246b02a9a3a63f))
 
 ## [0.1.4](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.3...v0.1.4) (2026-05-22)
 
