@@ -28,4 +28,12 @@ If uncertain, ask the developer before adding an entry.
 
 ## Entries
 
-No confirmed repository-specific surprises yet.
+### Moderation rule links must use rules hash routes
+
+- **Date:** 2026-06-14
+- **Observed by:** Codex
+- **Context:** Formatting pending-approval AI moderation reasons that mention community rules.
+- **What was surprising:** The 5chan markdown renderer accepts `/rules#an` as an internal React Router link, but treats slash-style rule URLs such as `/rules/an` as unsupported and renders them as plain text.
+- **Impact:** Rule references in mod queue reasons can appear unlinked even when the challenge emitted markdown, because the client strips unsupported `/rules/<board>` links.
+- **Mitigation:** Generate rules hash-route links for community rule references, for example `[rule #1](/rules#an)`.
+- **Status:** confirmed

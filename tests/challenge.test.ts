@@ -483,7 +483,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(reviewResult).toEqual({
             success: true,
             commentUpdate: {
-                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because no spam ([rule #1](/rules/spam))"
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because no spam ([rule #1](/rules#spam))"
             }
         });
         expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -498,6 +498,71 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(userPayload.instructions).toContain("untrusted user content");
         expect(userPayload.community.rules).toEqual(["No spam", "No sexualized minors"]);
         expect(userPayload.publication.content).toBe("Buy cheap pills at spam.example now.");
+    });
+
+    it("links rule references already present in model review reasons", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "The post appears unrelated to animals or nature as defined by the board topic rule (rule #1)",
+                matchedRuleIndexes: []
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const animalsCommunity = {
+            ...community,
+            title: "/an/ - Animals & Nature",
+            rules: ["Posts must be related to animals or nature"]
+        } as unknown as LocalCommunity;
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: pendingApprovalSettings({ apiUrl: "https://provider.example/animal-rule-link", branch: "review" }),
+            challengeRequestMessage: createCommentRequest("Check out this unrelated laptop deal."),
+            challengeIndex: 1,
+            community: animalsCommunity
+        });
+
+        expect(result).toEqual({
+            success: true,
+            commentUpdate: {
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because the post appears unrelated to animals or nature as defined by the board topic rule ([rule #1](/rules#an))"
+            }
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves bracketed rule references already present in model review reasons", async () => {
+        const fetchMock = stubFetch(
+            createModelResponse({
+                verdict: "review",
+                reason: "The post appears unrelated to animals or nature as defined by [board topic rule #1](/rules#an)",
+                matchedRuleIndexes: [0]
+            })
+        );
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+        const animalsCommunity = {
+            ...community,
+            title: "/an/ - Animals & Nature",
+            rules: ["Posts must be related to animals or nature"]
+        } as unknown as LocalCommunity;
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: pendingApprovalSettings({
+                apiUrl: "https://provider.example/existing-animal-rule-link",
+                branch: "review"
+            }),
+            challengeRequestMessage: createCommentRequest("Check out this unrelated laptop deal."),
+            challengeIndex: 1,
+            community: animalsCommunity
+        });
+
+        expect(result).toEqual({
+            success: true,
+            commentUpdate: {
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because the post appears unrelated to animals or nature as defined by [board topic rule #1](/rules#an)"
+            }
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("redacts publication text before adding the review reason to pending approval metadata", async () => {
@@ -978,7 +1043,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(result).toEqual({
             success: true,
             commentUpdate: {
-                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because content does not pertain to fashion or apparel ([rule #1](/rules/fa))"
+                reason: "[AI moderation](https://bitsocial.net/apps/ai-moderation-challenge) sent this post to the mod queue because content does not pertain to fashion or apparel ([rule #1](/rules#fa))"
             }
         });
         expect(fetchMock).toHaveBeenCalledTimes(2);

@@ -490,21 +490,86 @@ const getPendingApprovalTargetLabel = (targetKind: PublicationTarget["kind"]) =>
     return "publication";
 };
 
+const RULE_REFERENCE_PATTERN = /\brule #([1-9]\d*)\b/gi;
+
 const lowerFirstReasonChar = (reason: string) => (reason ? reason[0].toLowerCase() + reason.slice(1) : reason);
 
 const getCommunityRulesPath = (communityContext: CommunityContext) => {
     const titleMatch = communityContext.title?.match(/^\/([^/\s]+)\//);
     if (!titleMatch?.[1]) return undefined;
-    return `/rules/${encodeURIComponent(titleMatch[1])}`;
+    return `/rules#${encodeURIComponent(titleMatch[1])}`;
 };
 
-const formatRuleLinks = (matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"], communityContext: CommunityContext) => {
-    const rulesPath = getCommunityRulesPath(communityContext);
-    if (!rulesPath || !Array.isArray(matchedRuleIndexes)) return "";
+const isKnownRuleNumber = (ruleNumber: number, communityContext: CommunityContext) =>
+    Number.isInteger(ruleNumber) && ruleNumber > 0 && ruleNumber <= communityContext.rules.length;
 
+const getMatchedRuleNumbers = (matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"], communityContext: CommunityContext) => {
+    if (!Array.isArray(matchedRuleIndexes)) return [];
     const ruleNumbers = [
-        ...new Set(matchedRuleIndexes.filter((index) => Number.isInteger(index) && index >= 0).map((index) => index + 1))
+        ...new Set(
+            matchedRuleIndexes
+                .filter((index) => Number.isInteger(index) && index >= 0 && index < communityContext.rules.length)
+                .map((index) => index + 1)
+        )
     ].sort((a, b) => a - b);
+    return ruleNumbers;
+};
+
+const getReferencedRuleNumbers = (reason: string, communityContext: CommunityContext) => {
+    const ruleNumbers = new Set<number>();
+    for (const match of reason.matchAll(RULE_REFERENCE_PATTERN)) {
+        const ruleNumber = Number(match[1]);
+        if (isKnownRuleNumber(ruleNumber, communityContext)) {
+            ruleNumbers.add(ruleNumber);
+        }
+    }
+    return ruleNumbers;
+};
+
+const isInsideSquareBrackets = (value: string, start: number, end: number) => {
+    const previousOpen = value.lastIndexOf("[", start);
+    const previousClose = value.lastIndexOf("]", start);
+    if (previousOpen <= previousClose) return false;
+
+    const nextClose = value.indexOf("]", end);
+    const nextOpen = value.indexOf("[", end);
+    return nextClose !== -1 && (nextOpen === -1 || nextClose < nextOpen);
+};
+
+const linkReasonRuleReferences = (reason: string, communityContext: CommunityContext) => {
+    const rulesPath = getCommunityRulesPath(communityContext);
+    if (!rulesPath) return reason;
+
+    let linkedReason = "";
+    let lastIndex = 0;
+    for (const match of reason.matchAll(RULE_REFERENCE_PATTERN)) {
+        if (typeof match.index !== "number") continue;
+        const matchedText = match[0];
+        const ruleNumber = Number(match[1]);
+        const start = match.index;
+        const end = start + matchedText.length;
+        if (!isKnownRuleNumber(ruleNumber, communityContext) || isInsideSquareBrackets(reason, start, end)) continue;
+
+        linkedReason += reason.slice(lastIndex, start);
+        linkedReason += `[${matchedText}](${rulesPath})`;
+        lastIndex = end;
+    }
+
+    if (lastIndex === 0) return reason;
+    return `${linkedReason}${reason.slice(lastIndex)}`;
+};
+
+const formatRuleLinks = (
+    matchedRuleIndexes: ModelVerdict["matchedRuleIndexes"],
+    communityContext: CommunityContext,
+    referencedRuleNumbers: ReadonlySet<number>
+) => {
+    const rulesPath = getCommunityRulesPath(communityContext);
+    if (!rulesPath) return "";
+
+    const ruleNumbers = getMatchedRuleNumbers(matchedRuleIndexes, communityContext).filter(
+        (ruleNumber) => !referencedRuleNumbers.has(ruleNumber)
+    );
     if (ruleNumbers.length === 0) return "";
 
     return ` (${ruleNumbers.map((ruleNumber) => `[rule #${ruleNumber}](${rulesPath})`).join(", ")})`;
@@ -518,7 +583,8 @@ const formatPendingApprovalReason = (
 ) => {
     const trimmedReason = typeof reason === "string" ? reason.trim() : "";
     if (!trimmedReason || trimmedReason.startsWith(aiModerationLink)) return trimmedReason;
-    return `${aiModerationLink} sent this ${getPendingApprovalTargetLabel(targetKind)} to the mod queue because ${lowerFirstReasonChar(trimmedReason)}${formatRuleLinks(matchedRuleIndexes, communityContext)}`;
+    const reasonWithLinkedRules = linkReasonRuleReferences(lowerFirstReasonChar(trimmedReason), communityContext);
+    return `${aiModerationLink} sent this ${getPendingApprovalTargetLabel(targetKind)} to the mod queue because ${reasonWithLinkedRules}${formatRuleLinks(matchedRuleIndexes, communityContext, getReferencedRuleNumbers(reasonWithLinkedRules, communityContext))}`;
 };
 
 const getModelSubmittedAt = (timestamp: number | undefined): ModelSubmittedAt | undefined => {
