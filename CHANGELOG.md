@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.8...v0.1.9) (2026-06-14)
+
+### Bug Fixes
+
+* **challenge:** use rules hash links in moderation reasons ([55f0a8c](https://github.com/bitsocialnet/ai-moderation-challenge/commit/55f0a8c4dd1e157cf5f96dd022a285b8a81dac7d)), closes [rules#board](https://github.com/bitsocialnet/rules/issues/board) [#N](https://github.com/bitsocialnet/ai-moderation-challenge/issues/N)
+
 ## [0.1.8](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.7...v0.1.8) (2026-06-10)
 
 ### Bug Fixes
