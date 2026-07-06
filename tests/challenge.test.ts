@@ -243,6 +243,7 @@ describe("Bitsocial AI moderation challenge package", () => {
         const input = body.input as Array<{ role: string; content: string }>;
         expect(input[0].role).toBe("system");
         expect(input[0].content).toContain("custom prompt");
+        expect(input[0].content).not.toContain("Reply moderation policy");
         expect(input[0].content).not.toContain("Global duplicate-thread policy");
         const userPayload = JSON.parse(input[1].content) as Record<string, unknown>;
         expect(userPayload).toEqual({
@@ -281,6 +282,45 @@ describe("Bitsocial AI moderation challenge package", () => {
         expect(userPayload.publication).not.toHaveProperty("signatureHash");
         expect(userPayload.publication).not.toHaveProperty("challengeRequestIdHash");
         expect(fetchMock.mock.calls.map((call) => call[0])).not.toContain("https://cdn.example.com/media/image.png?sig=1");
+    });
+
+    it("adds reply-specific leniency to private prompt requests", async () => {
+        const fetchMock = stubFetch(createModelResponse({ verdict: "allow", reason: "", matchedRuleIndexes: [] }));
+        const challengeFile = ChallengeFileFactory({} as CommunityChallengeSetting);
+
+        const result = await challengeFile.getChallenge({
+            challengeSettings: settings({ model: "gpt-test", prompt: "custom prompt" }),
+            challengeRequestMessage: createReplyRequest(">>111\nhi john"),
+            challengeIndex: 1,
+            community: {
+                ...community,
+                title: "/v/ - Video Games",
+                rules: [
+                    "All posts should pertain to video games, their consoles, and video game culture. Threads should remain on topic and stay in theme with the board. Don't post off-topic garbage."
+                ]
+            } as unknown as LocalCommunity
+        });
+
+        expect(result).toEqual({ success: true });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+
+        const body = getRequestBody(fetchMock);
+        const input = body.input as Array<{ role: string; content: string }>;
+        expect(input[0].content).toContain("custom prompt");
+        expect(input[0].content).toContain("Reply moderation policy");
+        expect(input[0].content).toContain("Do not return review for a reply solely because it is short");
+        expect(input[0].content).not.toContain("Global duplicate-thread policy");
+
+        const userPayload = JSON.parse(input[1].content) as {
+            instructions: string;
+            publication: Record<string, unknown>;
+        };
+        expect(userPayload.instructions).toContain("For replies, apply top-level post and thread-starting rules more narrowly");
+        expect(userPayload.instructions).toContain("off-topic-looking");
+        expect(userPayload.publication).toMatchObject({
+            kind: "reply",
+            content: ">>111\nhi john"
+        });
     });
 
     it("sends URL date hints and submission time for article-recency rules", async () => {
