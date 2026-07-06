@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-* **challenge:** relax reply moderation prompts ([b927789](https://github.com/bitsocialnet/ai-moderation-challenge/commit/b9277893aac1ae609d0c3437c44efee746221165))
+- **challenge:** relax reply moderation prompts ([b927789](https://github.com/bitsocialnet/ai-moderation-challenge/commit/b9277893aac1ae609d0c3437c44efee746221165))
 
 ## [0.1.9](https://github.com/bitsocialnet/ai-moderation-challenge/compare/v0.1.8...v0.1.9) (2026-06-14)
 
