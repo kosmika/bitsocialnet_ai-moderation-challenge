@@ -1,6 +1,6 @@
 {
     "name": "@bitsocial/ai-moderation-challenge",
-    "version": "0.1.9",
+    "version": "0.1.10",
     "description": "Bitsocial AI moderation challenge implementation for PKC",
     "keywords": [
         "bitsocial",
